@@ -20,7 +20,7 @@ const getClientId = () => {
 const CLIENT_ID = getClientId();
 
 // Dynamic Redirect URI: domain.com/redirect/spotify/
-const REDIRECT_URI = `${window.location.origin}/redirect/spotify/`;
+const REDIRECT_URI = `${window.location.origin}/`;
 
 const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
 const RESPONSE_TYPE = "token";
@@ -29,7 +29,8 @@ const SCOPES = [
   "user-read-playback-state",
   "streaming", 
   "user-read-email", 
-  "user-read-private"
+  "user-read-private",
+  "user-modify-playback-state"
 ];
 
 export const getSpotifyLoginUrl = () => {
@@ -55,8 +56,59 @@ export const getTokenFromUrl = (): string | null => {
 
 export const cleanUrl = () => {
   window.location.hash = "";
-  // Limpa a URL visualmente voltando para a raiz, para não ficar em /redirect/spotify/
   if (window.location.pathname.includes('/redirect/spotify')) {
     window.history.replaceState({}, document.title, window.location.origin);
   }
+};
+
+// --- API Calls ---
+
+export const searchSpotifyTrack = async (token: string, artist: string, title: string) => {
+  if (!token) return null;
+  try {
+    const query = encodeURIComponent(`track:${title} artist:${artist}`);
+    const res = await fetch(`https://api.spotify.com/v1/search?q=${query}&type=track&limit=1`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const data = await res.json();
+    if (data.tracks && data.tracks.items.length > 0) {
+      const track = data.tracks.items[0];
+      return {
+        uri: track.uri,
+        imageUrl: track.album.images[0]?.url,
+        durationMs: track.duration_ms
+      };
+    }
+  } catch (e) {
+    console.error("Spotify Search Error", e);
+  }
+  return null;
+};
+
+export const playSpotifyTrack = async (token: string, deviceId: string, trackUri: string) => {
+  if (!token || !deviceId || !trackUri) return;
+  try {
+    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      method: 'PUT',
+      headers: { 
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        uris: [trackUri]
+      })
+    });
+  } catch (e) {
+    console.error("Spotify Play Error", e);
+  }
+};
+
+export const pauseSpotify = async (token: string) => {
+  if (!token) return;
+  try {
+    await fetch(`https://api.spotify.com/v1/me/player/pause`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (e) { console.error("Pause Error", e); }
 };

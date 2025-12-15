@@ -2,6 +2,7 @@ export interface User {
   id: string;
   username: string;
   avatar: string;
+  password?: string; // Adicionado para autenticação
 }
 
 export interface Track {
@@ -10,6 +11,9 @@ export interface Track {
   genre: string;
   reason: string;
   requestedBy?: string; // Username of requester
+  spotifyUri?: string; // URI para tocar no player
+  imageUrl?: string; // Capa do álbum real
+  durationMs?: number;
 }
 
 export interface ChatMessage {

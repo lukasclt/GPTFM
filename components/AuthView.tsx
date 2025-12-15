@@ -1,26 +1,53 @@
 import React, { useState } from 'react';
-import { Radio, ArrowRight } from 'lucide-react';
+import { Radio, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { User } from '../types';
+import { loginUser, registerUser } from '../db';
 
 interface AuthViewProps {
   onLogin: (user: User) => void;
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
-  const [isLogin, setIsLogin] = useState(true);
+  const [isLoginView, setIsLoginView] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Simulando autenticação
-    if (username.trim()) {
-      onLogin({
-        id: crypto.randomUUID(),
-        username: username,
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`
-      });
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      if (!username.trim() || !password.trim()) {
+        throw new Error("Por favor, preencha todos os campos.");
+      }
+
+      let user: User;
+
+      if (isLoginView) {
+        // Login Logic
+        user = await loginUser(username, password);
+      } else {
+        // Register Logic
+        user = await registerUser(username, password);
+      }
+
+      // Success
+      onLogin(user);
+
+    } catch (err: any) {
+      setError(err.message || "Ocorreu um erro. Tente novamente.");
+    } finally {
+      setIsLoading(false);
     }
+  };
+
+  const toggleView = () => {
+    setIsLoginView(!isLoginView);
+    setError(null);
+    setPassword('');
   };
 
   return (
@@ -38,6 +65,13 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
           <p className="text-gray-400 text-sm mt-2">A frequência do futuro.</p>
         </div>
 
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-xl flex items-center gap-2 text-red-200 text-sm animate-in slide-in-from-top-2">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {error}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider mb-1 ml-1">Usuário</label>
@@ -45,7 +79,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-green-500 transition-all"
+              className="w-full bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-green-500 transition-all placeholder-gray-600"
               placeholder="Seu nome de DJ..."
               required
             />
@@ -57,7 +91,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-green-500 transition-all"
+              className="w-full bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-green-500 transition-all placeholder-gray-600"
               placeholder="••••••••"
               required
             />
@@ -65,19 +99,26 @@ export const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
           <button
             type="submit"
-            className="w-full bg-green-500 hover:bg-green-400 text-black font-bold py-3.5 rounded-xl transition-all transform active:scale-95 flex items-center justify-center gap-2 group"
+            disabled={isLoading}
+            className={`w-full bg-green-500 hover:bg-green-400 text-black font-bold py-3.5 rounded-xl transition-all transform active:scale-95 flex items-center justify-center gap-2 group ${isLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
           >
-            {isLogin ? 'Entrar na Estação' : 'Criar Conta'}
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <>
+                {isLoginView ? 'Entrar na Estação' : 'Criar Conta'}
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </>
+            )}
           </button>
         </form>
 
         <div className="mt-6 text-center">
           <button 
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-sm text-gray-500 hover:text-green-400 transition-colors"
+            onClick={toggleView}
+            className="text-sm text-gray-500 hover:text-green-400 transition-colors focus:outline-none"
           >
-            {isLogin ? 'Não tem conta? Registre-se' : 'Já tem conta? Faça login'}
+            {isLoginView ? 'Não tem conta? Registre-se agora' : 'Já tem conta? Faça login'}
           </button>
         </div>
       </div>

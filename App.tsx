@@ -64,7 +64,8 @@ function App() {
     if (!user) return;
     setAppState(AppState.LOADING);
     try {
-      const content = await generateRadioStation(prompt, { id: user.id, name: user.username }, isPublic);
+      // Pass spotifyToken here so we can resolve tracks immediately
+      const content = await generateRadioStation(prompt, { id: user.id, name: user.username }, isPublic, spotifyToken);
       
       // Save to DB
       await saveStation(content);

@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { RadioContent, Track } from "../types";
+import { searchSpotifyTrack } from "./spotifyService";
 
 // Tenta pegar a chave de várias fontes possíveis
 const getApiKey = () => {
@@ -56,13 +57,15 @@ const getMockStation = (prompt: string): any => {
 
 // --- SERVICES ---
 
-export const generateRadioStation = async (userPrompt: string, user: { id: string, name: string }, isPublic: boolean): Promise<RadioContent> => {
+export const generateRadioStation = async (userPrompt: string, user: { id: string, name: string }, isPublic: boolean, spotifyToken?: string | null): Promise<RadioContent> => {
+  let content: RadioContent;
+
   // SIMULATION MODE
   if (!ai) {
     console.warn("API Key not found. Running in Demo Mode.");
     await delay(2000); // Fake loading
     const mockData = getMockStation(userPrompt);
-    return {
+    content = {
       ...mockData,
       id: crypto.randomUUID(),
       ownerId: user.id,
@@ -72,62 +75,94 @@ export const generateRadioStation = async (userPrompt: string, user: { id: strin
       likes: 0,
       listeners: 1
     } as RadioContent;
-  }
-
-  // REAL AI MODE
-  try {
-    const model = "gemini-2.5-flash";
-    
-    const response = await ai.models.generateContent({
-      model,
-      contents: `Create a radio station experience based on this vibe: "${userPrompt}".
-      I need a creative station name, a short, charismatic DJ intro (max 3 sentences) welcoming listeners, and a list of 5 songs that fit perfectly.
-      For each song, briefly explain why it fits the vibe in the 'reason' field.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            stationName: { type: Type.STRING },
-            djIntro: { type: Type.STRING, description: "Charismatic DJ speech text" },
-            playlist: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  artist: { type: Type.STRING },
-                  title: { type: Type.STRING },
-                  genre: { type: Type.STRING },
-                  reason: { type: Type.STRING },
-                },
-                required: ["artist", "title", "genre", "reason"]
+  } else {
+    // REAL AI MODE
+    try {
+      const model = "gemini-2.5-flash";
+      
+      const response = await ai.models.generateContent({
+        model,
+        contents: `Create a radio station experience based on this vibe: "${userPrompt}".
+        I need a creative station name, a short, charismatic DJ intro (max 3 sentences) welcoming listeners, and a list of 5 songs that fit perfectly.
+        For each song, briefly explain why it fits the vibe in the 'reason' field.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              stationName: { type: Type.STRING },
+              djIntro: { type: Type.STRING, description: "Charismatic DJ speech text" },
+              playlist: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    artist: { type: Type.STRING },
+                    title: { type: Type.STRING },
+                    genre: { type: Type.STRING },
+                    reason: { type: Type.STRING },
+                  },
+                  required: ["artist", "title", "genre", "reason"]
+                }
               }
-            }
-          },
-          required: ["stationName", "djIntro", "playlist"]
+            },
+            required: ["stationName", "djIntro", "playlist"]
+          }
         }
-      }
-    });
+      });
 
-    if (response.text) {
-      const data = JSON.parse(response.text);
-      return {
-        ...data,
-        id: crypto.randomUUID(),
-        ownerId: user.id,
-        ownerName: user.name,
-        isPublic,
-        vibe: userPrompt,
-        likes: 0,
-        listeners: 1
-      } as RadioContent;
+      if (response.text) {
+        const data = JSON.parse(response.text);
+        content = {
+          ...data,
+          id: crypto.randomUUID(),
+          ownerId: user.id,
+          ownerName: user.name,
+          isPublic,
+          vibe: userPrompt,
+          likes: 0,
+          listeners: 1
+        } as RadioContent;
+      } else {
+        throw new Error("No text returned from Gemini");
+      }
+    } catch (error) {
+      console.error("Error generating radio content:", error);
+      // Fallback to mock on error
+      const mockData = getMockStation(userPrompt);
+      content = {
+          ...mockData,
+          id: crypto.randomUUID(),
+          ownerId: user.id,
+          ownerName: user.name,
+          isPublic,
+          vibe: userPrompt,
+          likes: 0,
+          listeners: 1
+        } as RadioContent;
     }
-    throw new Error("No text returned from Gemini");
-  } catch (error) {
-    console.error("Error generating radio content:", error);
-    // Fallback to mock on error
-    return generateRadioStation(userPrompt, user, isPublic);
   }
+
+  // Se tiver token do Spotify, tenta resolver os metadados reais
+  if (spotifyToken && content.playlist) {
+    const updatedPlaylist: Track[] = [];
+    for (const track of content.playlist) {
+      const spotifyData = await searchSpotifyTrack(spotifyToken, track.artist, track.title);
+      if (spotifyData) {
+        updatedPlaylist.push({
+          ...track,
+          spotifyUri: spotifyData.uri,
+          imageUrl: spotifyData.imageUrl,
+          durationMs: spotifyData.durationMs
+        });
+      } else {
+        updatedPlaylist.push(track);
+      }
+    }
+    content.playlist = updatedPlaylist;
+  }
+
+  return content;
 };
 
 export const generateAdScript = async (stationName: string): Promise<string> => {

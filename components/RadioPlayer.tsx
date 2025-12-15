@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Play, Pause, SkipForward, ExternalLink, RefreshCw, Radio, ThumbsUp, ThumbsDown, MessageSquare, ArrowLeft, Send } from 'lucide-react';
 import { RadioContent, Track, User, ChatMessage } from '../types';
 import { Visualizer } from './Visualizer';
 import { generateDJVoice, generateAdScript, evaluateSongRequest } from '../services/geminiService';
 import { ChatWindow } from './ChatWindow';
+import { playSpotifyTrack, pauseSpotify, searchSpotifyTrack } from '../services/spotifyService';
 
 interface RadioPlayerProps {
   content: RadioContent;
@@ -19,6 +20,8 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
   const [isDjSpeaking, setIsDjSpeaking] = useState(false);
   const [isAdBreak, setIsAdBreak] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
+  const [isSpotifyReady, setIsSpotifyReady] = useState(false);
   
   // Interaction State
   const [likes, setLikes] = useState(initialContent.likes);
@@ -41,33 +44,201 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
   const trackTimerRef = useRef<number | null>(null);
   const progressIntervalRef = useRef<number | null>(null);
   const adCheckIntervalRef = useRef<number | null>(null);
+  const spotifyPlayerRef = useRef<any>(null);
 
   const currentTrack = content.playlist[currentTrackIndex];
 
-  // --- Audio Lifecycle ---
+  // --- Initialization ---
 
   useEffect(() => {
-    const initAudio = async () => {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      try {
-        const audioData = await generateDJVoice(content.djIntro);
-        // Start automatically
-        playDjIntro(audioData);
-      } catch (e) {
-        console.error("Failed to load DJ voice", e);
-      }
-    };
-    initAudio();
+    // 1. Setup Audio Context for DJ
+    audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // 2. Setup Spotify SDK if token exists
+    if (spotifyToken) {
+      const script = document.createElement("script");
+      script.src = "https://sdk.scdn.co/spotify-player.js";
+      script.async = true;
+      document.body.appendChild(script);
 
-    // Ad Check Loop (Check every 30s)
+      (window as any).onSpotifyWebPlaybackSDKReady = () => {
+        const player = new (window as any).Spotify.Player({
+          name: 'GPTFM Web Player',
+          getOAuthToken: (cb: any) => { cb(spotifyToken); },
+          volume: 0.5
+        });
+
+        player.addListener('ready', ({ device_id }: { device_id: string }) => {
+          console.log('Ready with Device ID', device_id);
+          setSpotifyDeviceId(device_id);
+          setIsSpotifyReady(true);
+        });
+
+        player.addListener('not_ready', ({ device_id }: { device_id: string }) => {
+          console.log('Device ID has gone offline', device_id);
+          setIsSpotifyReady(false);
+        });
+
+        player.addListener('player_state_changed', (state: any) => {
+          if (!state) return;
+          // Sync Spotify progress with our UI if simulating
+          if (state.paused && state.position === 0 && state.restrictions.disallow_resuming_reasons && state.restrictions.disallow_resuming_reasons.length === 0) {
+             // Track finished naturally?
+          }
+        });
+
+        player.connect();
+        spotifyPlayerRef.current = player;
+      };
+    }
+
+    // 3. Start Intro
+    initIntro();
+
+    // 4. Ad Loop
     adCheckIntervalRef.current = window.setInterval(checkAdBreak, 30000);
 
     return () => {
       stopAllAudio();
       if (adCheckIntervalRef.current) clearInterval(adCheckIntervalRef.current);
+      if (spotifyPlayerRef.current) spotifyPlayerRef.current.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const initIntro = async () => {
+     try {
+        const audioData = await generateDJVoice(content.djIntro);
+        playDjIntro(audioData);
+      } catch (e) {
+        console.error("Failed to load DJ voice", e);
+        // Fallback start
+        startTrack();
+      }
+  };
+
+  // --- Playback Logic ---
+
+  const stopAllAudio = () => {
+    if (djSourceRef.current) {
+      djSourceRef.current.stop();
+    }
+    if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    
+    if (spotifyToken && spotifyPlayerRef.current) {
+      spotifyPlayerRef.current.pause();
+    }
+    
+    setIsPlaying(false);
+    setIsDjSpeaking(false);
+  };
+
+  const playAudioBuffer = async (buffer: ArrayBuffer, onEnded: () => void) => {
+     if (!audioContextRef.current) return;
+     const ctx = audioContextRef.current;
+     // Ensure context is running (browser policy)
+     if (ctx.state === 'suspended') await ctx.resume();
+
+     const audioBuffer = await ctx.decodeAudioData(buffer.slice(0));
+     const source = ctx.createBufferSource();
+     source.buffer = audioBuffer;
+     source.connect(ctx.destination);
+     source.onended = onEnded;
+     djSourceRef.current = source;
+     source.start();
+  };
+
+  const playDjIntro = async (buffer: ArrayBuffer) => {
+    // Stop Spotify before speaking
+    if (spotifyToken) pauseSpotify(spotifyToken);
+    
+    setIsDjSpeaking(true);
+    setIsPlaying(true);
+    await playAudioBuffer(buffer, () => {
+      setIsDjSpeaking(false);
+      startTrack();
+    });
+  };
+
+  const startTrack = async () => {
+    setIsPlaying(true);
+    setProgress(0);
+
+    // If Spotify is ready and we have a URI, play for real
+    if (spotifyToken && spotifyDeviceId && currentTrack.spotifyUri) {
+       await playSpotifyTrack(spotifyToken, spotifyDeviceId, currentTrack.spotifyUri);
+       
+       // Use real duration or fallback to 30s
+       const duration = currentTrack.durationMs || 30000;
+       const interval = 1000;
+       
+       // Poll progress from SDK or simulate visual progress
+       progressIntervalRef.current = window.setInterval(() => {
+          setProgress(prev => {
+             if (prev >= 100) return 100;
+             return prev + (interval / duration) * 100;
+          });
+       }, interval);
+
+       // Set timeout to go to next track (simpler than strictly listening to events for now)
+       trackTimerRef.current = window.setTimeout(() => {
+         handleNextTrack();
+       }, duration - 2000); // Crossfade ish
+
+    } else {
+      // Simulation Mode
+      const duration = 15000; 
+      const interval = 100;
+      
+      progressIntervalRef.current = window.setInterval(() => {
+        setProgress(prev => {
+          if (prev >= 100) {
+            handleNextTrack();
+            return 100;
+          }
+          return prev + (interval / duration) * 100;
+        });
+      }, interval);
+
+      trackTimerRef.current = window.setTimeout(() => {
+        handleNextTrack();
+      }, duration);
+    }
+  };
+
+  const handleNextTrack = () => {
+    stopAllAudio();
+
+    // Logic: Intro -> Track 1 -> DJ Comment -> Track 2 -> Ad? -> Track 3
+    // For simplicity: DJ speaks every 2 songs
+    const shouldDjSpeak = (currentTrackIndex + 1) % 2 === 0;
+
+    if (currentTrackIndex < content.playlist.length - 1) {
+      setCurrentTrackIndex(prev => prev + 1);
+      
+      if (shouldDjSpeak) {
+         playDjBridge(content.playlist[currentTrackIndex + 1]);
+      } else {
+         setTimeout(startTrack, 500); // Small delay
+      }
+
+    } else {
+      // Loop Playlist
+      setCurrentTrackIndex(0);
+      playDjBridge(content.playlist[0]);
+    }
+  };
+
+  const playDjBridge = async (nextTrack: Track) => {
+    const bridgeText = `Isso foi ${currentTrack.artist}. A seguir, ${nextTrack.title} de ${nextTrack.artist}.`;
+    try {
+      const audio = await generateDJVoice(bridgeText);
+      playDjIntro(audio); // Reuse Intro logic
+    } catch {
+      startTrack();
+    }
+  };
 
   // --- Ad Logic ---
 
@@ -83,111 +254,40 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
     setIsAdBreak(true);
     setIsPlaying(true);
     
-    // Generate Ad Script
-    const adScript = await generateAdScript(content.stationName);
-    
-    // Add System Message
-    addMessage({
-      id: crypto.randomUUID(),
-      userId: 'sys',
-      username: 'Anúncio',
-      text: 'Intervalo comercial. Voltamos já!',
-      timestamp: Date.now(),
-      isSystem: true
-    });
+    addMessage({ id: crypto.randomUUID(), userId: 'sys', username: 'Anúncio', text: 'Intervalo comercial.', timestamp: Date.now(), isSystem: true });
 
     try {
+      const adScript = await generateAdScript(content.stationName);
       const audioData = await generateDJVoice(adScript);
       await playAudioBuffer(audioData, () => {
         setIsAdBreak(false);
         setLastAdTime(Date.now());
-        // Resume track or next track
-        startTrackSimulation(); 
+        startTrack(); 
       });
     } catch (e) {
-      console.error("Ad failed", e);
       setIsAdBreak(false);
-      startTrackSimulation();
-    }
-  };
-
-  // --- Player Logic ---
-
-  const stopAllAudio = () => {
-    if (djSourceRef.current) {
-      djSourceRef.current.stop();
-    }
-    if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    setIsPlaying(false);
-    setIsDjSpeaking(false);
-  };
-
-  const playAudioBuffer = async (buffer: ArrayBuffer, onEnded: () => void) => {
-     if (!audioContextRef.current) return;
-     const ctx = audioContextRef.current;
-     const audioBuffer = await ctx.decodeAudioData(buffer.slice(0));
-     const source = ctx.createBufferSource();
-     source.buffer = audioBuffer;
-     source.connect(ctx.destination);
-     source.onended = onEnded;
-     djSourceRef.current = source;
-     source.start();
-  };
-
-  const playDjIntro = async (buffer: ArrayBuffer) => {
-    stopAllAudio();
-    setIsDjSpeaking(true);
-    setIsPlaying(true);
-    await playAudioBuffer(buffer, () => {
-      setIsDjSpeaking(false);
-      startTrackSimulation();
-    });
-  };
-
-  const startTrackSimulation = () => {
-    setIsPlaying(true);
-    setProgress(0);
-    
-    // Simular musica de 15 segundos
-    const duration = 15000; 
-    const interval = 100;
-    
-    progressIntervalRef.current = window.setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          handleNextTrack();
-          return 100;
-        }
-        return prev + (interval / duration) * 100;
-      });
-    }, interval);
-
-    trackTimerRef.current = window.setTimeout(() => {
-      handleNextTrack();
-    }, duration);
-  };
-
-  const handleNextTrack = () => {
-    if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    
-    if (currentTrackIndex < content.playlist.length - 1) {
-      setCurrentTrackIndex(prev => prev + 1);
-      startTrackSimulation();
-    } else {
-      // Loop Playlist
-      setCurrentTrackIndex(0);
-      startTrackSimulation();
+      startTrack();
     }
   };
 
   const togglePlay = () => {
     if (isPlaying) {
-      stopAllAudio();
+      if (spotifyToken && spotifyPlayerRef.current) spotifyPlayerRef.current.pause();
+      if (djSourceRef.current) djSourceRef.current.stop(); // Can't pause AudioBufferSource, must stop
+      if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       setIsPlaying(false);
     } else {
-      startTrackSimulation();
+      if (isDjSpeaking) {
+         // Restart DJ logic is hard with buffer, better to just skip to track
+         setIsDjSpeaking(false);
+         startTrack();
+      } else {
+         if (spotifyToken && spotifyPlayerRef.current) spotifyPlayerRef.current.resume();
+         setIsPlaying(true);
+         // Resume progress timer (simplified, actually resets duration)
+         startTrack();
+      }
     }
   };
 
@@ -200,15 +300,7 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
     } else {
       setLikes(prev => prev + 1);
       setHasLiked(true);
-      // Simulate socket emit
-      addMessage({
-        id: crypto.randomUUID(),
-        userId: 'sys',
-        username: 'System',
-        text: `${user.username} curtiu a rádio! ❤️`,
-        timestamp: Date.now(),
-        isSystem: true
-      });
+      addMessage({ id: crypto.randomUUID(), userId: 'sys', username: 'System', text: `${user.username} curtiu a rádio! ❤️`, timestamp: Date.now(), isSystem: true });
     }
   };
 
@@ -217,53 +309,34 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
   };
 
   const handleSendMessage = (text: string) => {
-    addMessage({
-      id: crypto.randomUUID(),
-      userId: user.id,
-      username: user.username,
-      text: text,
-      timestamp: Date.now()
-    });
-
-    // Simular resposta de outros users aleatoriamente
-    if (Math.random() > 0.7) {
-      setTimeout(() => {
-        addMessage({
-          id: crypto.randomUUID(),
-          userId: 'mock-user',
-          username: 'Listener_99',
-          text: 'Essa música é muito boa!',
-          timestamp: Date.now()
-        });
-      }, 2000);
-    }
+    addMessage({ id: crypto.randomUUID(), userId: user.id, username: user.username, text: text, timestamp: Date.now() });
   };
 
   const handleRequestSong = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!requestQuery.trim()) return;
-    
     setIsRequesting(true);
+    
     const result = await evaluateSongRequest(requestQuery, content.vibe);
     
     if (result) {
-      const newTrack: Track = { ...result, requestedBy: user.username };
-      // Add to next position in playlist
+      let newTrack: Track = { ...result, requestedBy: user.username };
+      
+      // Resolve Spotify Data for request
+      if (spotifyToken) {
+         const spotData = await searchSpotifyTrack(spotifyToken, result.artist, result.title);
+         if (spotData) {
+            newTrack = { ...newTrack, spotifyUri: spotData.uri, imageUrl: spotData.imageUrl, durationMs: spotData.durationMs };
+         }
+      }
+
       const newPlaylist = [...content.playlist];
       newPlaylist.splice(currentTrackIndex + 1, 0, newTrack);
-      
       setContent(prev => ({ ...prev, playlist: newPlaylist }));
+      
       setShowRequestModal(false);
       setRequestQuery('');
-      
-      addMessage({
-        id: crypto.randomUUID(),
-        userId: 'sys',
-        username: 'DJ AI',
-        text: `Pedido aceito! "${result.title}" vai tocar a seguir.`,
-        timestamp: Date.now(),
-        isSystem: true
-      });
+      addMessage({ id: crypto.randomUUID(), userId: 'sys', username: 'DJ AI', text: `Pedido aceito! "${result.title}" vai tocar a seguir.`, timestamp: Date.now(), isSystem: true });
     } else {
       alert("O DJ achou que essa música não combina com a vibe atual!");
     }
@@ -295,8 +368,9 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
             </h2>
             <div className="flex items-center gap-2 text-xs text-gray-500">
                <span className="flex items-center gap-1"><Radio className="w-3 h-3" /> 104.5 GPT FM</span>
-               <span>•</span>
-               <span className="text-green-500">Online: {content.listeners + 1}</span>
+               {spotifyToken && (
+                 <span className={`w-2 h-2 rounded-full ${isSpotifyReady ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} title={isSpotifyReady ? "Spotify Ready" : "Connecting Spotify"}></span>
+               )}
             </div>
           </div>
           <button onClick={() => setShowChat(!showChat)} className="md:hidden p-2 text-gray-400 hover:text-white">
@@ -308,7 +382,6 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
         <main className="flex-1 flex flex-col items-center justify-center p-6 gap-8">
           
           <div className="relative group w-full max-w-sm aspect-square">
-            {/* Ad Overlay */}
             {isAdBreak && (
                <div className="absolute inset-0 z-50 bg-yellow-500/20 backdrop-blur-sm rounded-3xl border border-yellow-500/50 flex flex-col items-center justify-center text-center p-6 animate-pulse">
                   <h3 className="text-2xl font-bold text-yellow-500 mb-2">INTERVALO COMERCIAL</h3>
@@ -325,7 +398,7 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
                  </div>
               ) : (
                  <img 
-                   src={`https://picsum.photos/seed/${currentTrack.title.replace(/\s/g, '')}/800/800`} 
+                   src={currentTrack.imageUrl || `https://picsum.photos/seed/${currentTrack.title.replace(/\s/g, '')}/800/800`} 
                    alt="Album Art"
                    className="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-700"
                  />
@@ -404,7 +477,7 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialConten
         </footer>
       </div>
 
-      {/* RIGHT COLUMN: CHAT (Desktop) */}
+      {/* RIGHT COLUMN: CHAT */}
       <div className={`w-full md:w-80 border-l border-white/10 bg-black z-20 md:flex flex-col ${showChat ? 'flex fixed inset-0 md:static' : 'hidden'}`}>
         <div className="md:hidden flex justify-between items-center p-4 border-b border-white/10">
           <h3 className="font-bold text-white">Chat ao Vivo</h3>

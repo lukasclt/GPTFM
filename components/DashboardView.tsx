@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Radio, Users, Globe, Lock, Play, LogOut, Music } from 'lucide-react';
+import { Plus, Radio, Users, Globe, Lock, Play, LogOut, Music, Trash2, Share2, Settings } from 'lucide-react';
 import { RadioContent, User } from '../types';
-import { getPublicStations, getUserStations } from '../db';
+import { getPublicStations, getUserStations, deleteStation, updateStationVisibility } from '../db';
 import { getSpotifyLoginUrl } from '../services/spotifyService';
 
 interface DashboardViewProps {
@@ -17,25 +17,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onCreateNew,
   const [publicStations, setPublicStations] = useState<RadioContent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  const loadData = async () => {
+    try {
+      const userSt = await getUserStations(user.id);
+      const pubSt = await getPublicStations();
+      // Filter out my own stations from public list to avoid duplicates visually
+      const otherPublic = pubSt.filter(s => s.ownerId !== user.id);
+      setMyStations(userSt);
+      setPublicStations(otherPublic);
+    } catch (e) {
+      console.error("Failed to load stations from DB", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const userSt = await getUserStations(user.id);
-        const pubSt = await getPublicStations();
-        
-        // Filter out my own stations from public list to avoid duplicates visually
-        const otherPublic = pubSt.filter(s => s.ownerId !== user.id);
-        
-        setMyStations(userSt);
-        setPublicStations(otherPublic);
-      } catch (e) {
-        console.error("Failed to load stations from DB", e);
-      } finally {
-        setIsLoading(false);
-      }
-    };
     loadData();
   }, [user.id]);
+
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (confirm('Tem certeza que deseja apagar esta estação?')) {
+      await deleteStation(id);
+      loadData();
+    }
+  };
+
+  const handleToggleVisibility = async (e: React.MouseEvent, station: RadioContent) => {
+    e.stopPropagation();
+    await updateStationVisibility(station.id, !station.isPublic);
+    loadData();
+  };
+
+  const handleShare = (e: React.MouseEvent, station: RadioContent) => {
+    e.stopPropagation();
+    const text = `Sintonize na ${station.stationName} comigo no GPTFM! Vibe: ${station.vibe}`;
+    if (navigator.share) {
+      navigator.share({
+        title: station.stationName,
+        text: text,
+        url: window.location.href,
+      }).catch(console.error);
+    } else {
+      navigator.clipboard.writeText(`${text} - ${window.location.href}`);
+      alert('Link copiado para a área de transferência!');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-white p-6 pb-20">
@@ -96,7 +124,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onCreateNew,
             </button>
 
             {myStations.map((station) => (
-               <StationCard key={station.id} station={station} onSelect={onSelectStation} />
+               <StationCard 
+                 key={station.id} 
+                 station={station} 
+                 onSelect={onSelectStation}
+                 isOwner={true}
+                 onDelete={handleDelete}
+                 onShare={handleShare}
+                 onToggleVisibility={handleToggleVisibility}
+               />
             ))}
           </div>
         </section>
@@ -112,7 +148,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onCreateNew,
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {publicStations.length > 0 ? publicStations.map((station) => (
-                <StationCard key={station.id} station={station} onSelect={onSelectStation} />
+                <StationCard 
+                  key={station.id} 
+                  station={station} 
+                  onSelect={onSelectStation}
+                  isOwner={false}
+                  onShare={handleShare}
+                />
               )) : (
                  <div className="col-span-3 text-center py-10 text-gray-600 border border-dashed border-gray-800 rounded-xl">
                     Nenhuma rádio pública encontrada no momento. Seja o primeiro a criar!
@@ -126,20 +168,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ user, onCreateNew,
   );
 };
 
-const StationCard = ({ station, onSelect }: { station: RadioContent, onSelect: (s: RadioContent) => void }) => (
+interface StationCardProps {
+  station: RadioContent;
+  onSelect: (s: RadioContent) => void;
+  isOwner: boolean;
+  onDelete?: (e: React.MouseEvent, id: string) => void;
+  onShare?: (e: React.MouseEvent, s: RadioContent) => void;
+  onToggleVisibility?: (e: React.MouseEvent, s: RadioContent) => void;
+}
+
+const StationCard = ({ station, onSelect, isOwner, onDelete, onShare, onToggleVisibility }: StationCardProps) => (
   <div 
     onClick={() => onSelect(station)}
     className="group relative bg-gray-900 rounded-3xl p-6 border border-white/5 hover:border-white/20 transition-all hover:-translate-y-1 cursor-pointer overflow-hidden h-48 flex flex-col justify-between"
   >
-    <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-100 transition-opacity">
-      <div className="bg-green-500 w-10 h-10 rounded-full flex items-center justify-center shadow-lg shadow-green-500/30">
-        <Play className="w-4 h-4 text-black ml-1" />
-      </div>
+    <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+      {isOwner && onDelete && (
+        <button 
+          onClick={(e) => onDelete(e, station.id)}
+          className="bg-red-500/20 hover:bg-red-500 text-red-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+          title="Excluir"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      )}
+      {isOwner && onToggleVisibility && (
+         <button 
+          onClick={(e) => onToggleVisibility(e, station)}
+          className="bg-gray-700 hover:bg-gray-600 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+          title={station.isPublic ? "Tornar Privada" : "Tornar Pública"}
+        >
+          {station.isPublic ? <Lock className="w-4 h-4" /> : <Globe className="w-4 h-4" />}
+        </button>
+      )}
+      {onShare && (
+         <button 
+          onClick={(e) => onShare(e, station)}
+          className="bg-blue-500/20 hover:bg-blue-500 text-blue-500 hover:text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+          title="Compartilhar"
+        >
+          <Share2 className="w-4 h-4" />
+        </button>
+      )}
     </div>
 
     <div>
       <div className="flex justify-between items-start mb-2">
-        <div className="px-2 py-1 bg-white/5 rounded-md text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1">
+        <div className={`px-2 py-1 bg-white/5 rounded-md text-xs font-bold uppercase tracking-wider ${station.isPublic ? 'text-green-400' : 'text-gray-400'} flex items-center gap-1`}>
           {station.isPublic ? <Globe className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
           {station.isPublic ? 'Pública' : 'Privada'}
         </div>
