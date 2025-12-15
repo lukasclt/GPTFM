@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { Radio, Mic2, Disc, Sparkles } from 'lucide-react';
+import { Radio, Mic2, Disc, Sparkles, Globe, Lock } from 'lucide-react';
 
 interface SetupViewProps {
-  onStart: (prompt: string) => void;
+  onStart: (prompt: string, isPublic: boolean) => void;
+  onCancel: () => void;
   isLoading: boolean;
 }
 
-export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
+export const SetupView: React.FC<SetupViewProps> = ({ onStart, onCancel, isLoading }) => {
   const [prompt, setPrompt] = useState('');
+  const [isPublic, setIsPublic] = useState(true);
 
   const suggestions = [
     "Lo-fi beats para programar no escuro",
@@ -19,14 +21,20 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (prompt.trim()) {
-      onStart(prompt);
+      onStart(prompt, isPublic);
     }
   };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gradient-to-b from-gray-900 via-gray-900 to-black">
-      <div className="w-full max-w-lg space-y-8 animate-in fade-in slide-in-from-bottom-10 duration-700">
-        
+      <div className="w-full max-w-lg space-y-8 animate-in fade-in slide-in-from-bottom-10 duration-700 relative">
+        <button 
+          onClick={onCancel}
+          className="absolute -top-12 left-0 text-gray-500 hover:text-white text-sm"
+        >
+          ← Voltar ao Dashboard
+        </button>
+
         {/* Logo / Header */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center mb-6">
@@ -37,11 +45,11 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
               </div>
             </div>
           </div>
-          <h1 className="text-5xl font-bold brand-font tracking-tighter text-white">
-            GPT<span className="text-green-500">FM</span>
+          <h1 className="text-4xl font-bold brand-font tracking-tighter text-white">
+            Criar Nova Estação
           </h1>
-          <p className="text-gray-400 text-lg">
-            Sua rádio pessoal, curada e apresentada por IA.
+          <p className="text-gray-400">
+            Descreva a vibe e deixe a IA ser o DJ.
           </p>
         </div>
 
@@ -66,6 +74,24 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
               </div>
             </div>
 
+            {/* Toggle Public/Private */}
+            <div className="flex items-center gap-4 bg-black/30 p-2 rounded-xl border border-white/5">
+              <button
+                type="button"
+                onClick={() => setIsPublic(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${isPublic ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                <Globe className="w-4 h-4" /> Pública
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsPublic(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all ${!isPublic ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                <Lock className="w-4 h-4" /> Privada
+              </button>
+            </div>
+
             <button
               type="submit"
               disabled={isLoading || !prompt.trim()}
@@ -83,7 +109,7 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
               ) : (
                 <>
                   <Mic2 className="w-5 h-5" />
-                  Iniciar Rádio
+                  Entrar no Ar
                 </>
               )}
             </button>
@@ -97,6 +123,7 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
                 {suggestions.map((s) => (
                   <button
                     key={s}
+                    type="button"
                     onClick={() => setPrompt(s)}
                     className="text-xs bg-white/5 hover:bg-white/10 border border-white/5 text-gray-300 px-3 py-2 rounded-full transition-colors"
                   >
@@ -106,22 +133,6 @@ export const SetupView: React.FC<SetupViewProps> = ({ onStart, isLoading }) => {
               </div>
             </div>
           )}
-        </div>
-
-        {/* Features Grid */}
-        <div className="grid grid-cols-3 gap-4 text-center text-xs text-gray-500">
-          <div className="flex flex-col items-center gap-1">
-            <Disc className="w-5 h-5 mb-1 text-gray-400" />
-            <span>Playlist Smart</span>
-          </div>
-          <div className="flex flex-col items-center gap-1">
-            <Mic2 className="w-5 h-5 mb-1 text-gray-400" />
-            <span>Locutor AI</span>
-          </div>
-          <div className="flex flex-col items-center gap-1">
-            <Radio className="w-5 h-5 mb-1 text-gray-400" />
-            <span>Sinal Infinito</span>
-          </div>
         </div>
       </div>
     </div>

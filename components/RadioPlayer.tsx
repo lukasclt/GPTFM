@@ -1,36 +1,57 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Play, Pause, SkipForward, ExternalLink, RefreshCw, Radio } from 'lucide-react';
-import { RadioContent, Track } from '../types';
+import { Play, Pause, SkipForward, ExternalLink, RefreshCw, Radio, ThumbsUp, ThumbsDown, MessageSquare, ArrowLeft, Send } from 'lucide-react';
+import { RadioContent, Track, User, ChatMessage } from '../types';
 import { Visualizer } from './Visualizer';
-import { generateDJVoice } from '../services/geminiService';
+import { generateDJVoice, generateAdScript, evaluateSongRequest } from '../services/geminiService';
+import { ChatWindow } from './ChatWindow';
 
 interface RadioPlayerProps {
   content: RadioContent;
-  onReset: () => void;
+  user: User;
+  onExit: () => void;
+  spotifyToken: string | null;
 }
 
-export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) => {
+export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content: initialContent, user, onExit, spotifyToken }) => {
+  const [content, setContent] = useState(initialContent);
   const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isDjSpeaking, setIsDjSpeaking] = useState(false);
-  const [djAudioBuffer, setDjAudioBuffer] = useState<ArrayBuffer | null>(null);
+  const [isAdBreak, setIsAdBreak] = useState(false);
   const [progress, setProgress] = useState(0);
+  
+  // Interaction State
+  const [likes, setLikes] = useState(initialContent.likes);
+  const [hasLiked, setHasLiked] = useState(false);
+  const [showChat, setShowChat] = useState(false); // Mobile toggle
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [requestQuery, setRequestQuery] = useState('');
+  const [isRequesting, setIsRequesting] = useState(false);
+
+  // Chat State
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { id: '1', userId: 'sys', username: 'System', text: `Bem-vindo à rádio ${initialContent.stationName}!`, timestamp: Date.now(), isSystem: true }
+  ]);
+
+  // Ad Timer
+  const [lastAdTime, setLastAdTime] = useState(Date.now());
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const djSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const trackTimerRef = useRef<number | null>(null);
   const progressIntervalRef = useRef<number | null>(null);
+  const adCheckIntervalRef = useRef<number | null>(null);
 
   const currentTrack = content.playlist[currentTrackIndex];
 
-  // Initialize Audio Context and Preload DJ Voice
+  // --- Audio Lifecycle ---
+
   useEffect(() => {
     const initAudio = async () => {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       try {
         const audioData = await generateDJVoice(content.djIntro);
-        setDjAudioBuffer(audioData);
-        // Start the radio experience automatically once audio is ready
+        // Start automatically
         playDjIntro(audioData);
       } catch (e) {
         console.error("Failed to load DJ voice", e);
@@ -38,11 +59,59 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) =>
     };
     initAudio();
 
+    // Ad Check Loop (Check every 30s)
+    adCheckIntervalRef.current = window.setInterval(checkAdBreak, 30000);
+
     return () => {
       stopAllAudio();
+      if (adCheckIntervalRef.current) clearInterval(adCheckIntervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // --- Ad Logic ---
+
+  const checkAdBreak = () => {
+    const AD_INTERVAL = 5 * 60 * 1000; // 5 mins
+    if (Date.now() - lastAdTime > AD_INTERVAL && !isDjSpeaking) {
+      triggerAdBreak();
+    }
+  };
+
+  const triggerAdBreak = async () => {
+    stopAllAudio();
+    setIsAdBreak(true);
+    setIsPlaying(true);
+    
+    // Generate Ad Script
+    const adScript = await generateAdScript(content.stationName);
+    
+    // Add System Message
+    addMessage({
+      id: crypto.randomUUID(),
+      userId: 'sys',
+      username: 'Anúncio',
+      text: 'Intervalo comercial. Voltamos já!',
+      timestamp: Date.now(),
+      isSystem: true
+    });
+
+    try {
+      const audioData = await generateDJVoice(adScript);
+      await playAudioBuffer(audioData, () => {
+        setIsAdBreak(false);
+        setLastAdTime(Date.now());
+        // Resume track or next track
+        startTrackSimulation(); 
+      });
+    } catch (e) {
+      console.error("Ad failed", e);
+      setIsAdBreak(false);
+      startTrackSimulation();
+    }
+  };
+
+  // --- Player Logic ---
 
   const stopAllAudio = () => {
     if (djSourceRef.current) {
@@ -54,36 +123,34 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) =>
     setIsDjSpeaking(false);
   };
 
-  const playDjIntro = async (buffer: ArrayBuffer) => {
-    if (!audioContextRef.current) return;
-    
-    // Stop any existing sounds
-    stopAllAudio();
+  const playAudioBuffer = async (buffer: ArrayBuffer, onEnded: () => void) => {
+     if (!audioContextRef.current) return;
+     const ctx = audioContextRef.current;
+     const audioBuffer = await ctx.decodeAudioData(buffer.slice(0));
+     const source = ctx.createBufferSource();
+     source.buffer = audioBuffer;
+     source.connect(ctx.destination);
+     source.onended = onEnded;
+     djSourceRef.current = source;
+     source.start();
+  };
 
+  const playDjIntro = async (buffer: ArrayBuffer) => {
+    stopAllAudio();
     setIsDjSpeaking(true);
     setIsPlaying(true);
-
-    const ctx = audioContextRef.current;
-    const audioBuffer = await ctx.decodeAudioData(buffer.slice(0)); // clone buffer
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    
-    source.onended = () => {
+    await playAudioBuffer(buffer, () => {
       setIsDjSpeaking(false);
       startTrackSimulation();
-    };
-
-    djSourceRef.current = source;
-    source.start();
+    });
   };
 
   const startTrackSimulation = () => {
     setIsPlaying(true);
     setProgress(0);
     
-    // Simulate a song playing for 10 seconds (demo mode)
-    const duration = 10000; // 10 seconds
+    // Simular musica de 15 segundos
+    const duration = 15000; 
     const interval = 100;
     
     progressIntervalRef.current = window.setInterval(() => {
@@ -102,18 +169,16 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) =>
   };
 
   const handleNextTrack = () => {
-    // Clear current track timers
     if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     
-    // Logic for next
     if (currentTrackIndex < content.playlist.length - 1) {
       setCurrentTrackIndex(prev => prev + 1);
       startTrackSimulation();
     } else {
-      // End of playlist, maybe loop or stop
-      setIsPlaying(false);
-      setProgress(0);
+      // Loop Playlist
+      setCurrentTrackIndex(0);
+      startTrackSimulation();
     }
   };
 
@@ -122,13 +187,87 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) =>
       stopAllAudio();
       setIsPlaying(false);
     } else {
-      // Resume logic is complex without real audio seek, so we just restart the current phase
-      if (isDjSpeaking && djAudioBuffer) {
-         playDjIntro(djAudioBuffer);
-      } else {
-         startTrackSimulation();
-      }
+      startTrackSimulation();
     }
+  };
+
+  // --- Interaction Logic ---
+
+  const handleLike = () => {
+    if (hasLiked) {
+      setLikes(prev => prev - 1);
+      setHasLiked(false);
+    } else {
+      setLikes(prev => prev + 1);
+      setHasLiked(true);
+      // Simulate socket emit
+      addMessage({
+        id: crypto.randomUUID(),
+        userId: 'sys',
+        username: 'System',
+        text: `${user.username} curtiu a rádio! ❤️`,
+        timestamp: Date.now(),
+        isSystem: true
+      });
+    }
+  };
+
+  const addMessage = (msg: ChatMessage) => {
+    setMessages(prev => [...prev, msg]);
+  };
+
+  const handleSendMessage = (text: string) => {
+    addMessage({
+      id: crypto.randomUUID(),
+      userId: user.id,
+      username: user.username,
+      text: text,
+      timestamp: Date.now()
+    });
+
+    // Simular resposta de outros users aleatoriamente
+    if (Math.random() > 0.7) {
+      setTimeout(() => {
+        addMessage({
+          id: crypto.randomUUID(),
+          userId: 'mock-user',
+          username: 'Listener_99',
+          text: 'Essa música é muito boa!',
+          timestamp: Date.now()
+        });
+      }, 2000);
+    }
+  };
+
+  const handleRequestSong = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!requestQuery.trim()) return;
+    
+    setIsRequesting(true);
+    const result = await evaluateSongRequest(requestQuery, content.vibe);
+    
+    if (result) {
+      const newTrack: Track = { ...result, requestedBy: user.username };
+      // Add to next position in playlist
+      const newPlaylist = [...content.playlist];
+      newPlaylist.splice(currentTrackIndex + 1, 0, newTrack);
+      
+      setContent(prev => ({ ...prev, playlist: newPlaylist }));
+      setShowRequestModal(false);
+      setRequestQuery('');
+      
+      addMessage({
+        id: crypto.randomUUID(),
+        userId: 'sys',
+        username: 'DJ AI',
+        text: `Pedido aceito! "${result.title}" vai tocar a seguir.`,
+        timestamp: Date.now(),
+        isSystem: true
+      });
+    } else {
+      alert("O DJ achou que essa música não combina com a vibe atual!");
+    }
+    setIsRequesting(false);
   };
 
   const openSpotify = (track: Track) => {
@@ -137,129 +276,168 @@ export const RadioPlayer: React.FC<RadioPlayerProps> = ({ content, onReset }) =>
   };
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col relative overflow-hidden">
+    <div className="min-h-screen bg-black text-white flex flex-col md:flex-row relative overflow-hidden">
       {/* Background Gradient Mesh */}
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(34,197,94,0.15),transparent_50%)]"></div>
-      
-      {/* Header */}
-      <header className="relative z-10 flex justify-between items-center p-6 border-b border-white/5">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
-          <span className="text-xs font-bold tracking-widest text-red-500">AO VIVO</span>
-        </div>
-        <div className="flex flex-col items-center">
-          <h2 className="font-bold text-xl brand-font tracking-tight">{content.stationName}</h2>
-          <span className="text-xs text-gray-500">104.5 GPT FM</span>
-        </div>
-        <button onClick={onReset} className="text-gray-400 hover:text-white transition-colors">
-          <RefreshCw className="w-5 h-5" />
-        </button>
-      </header>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(34,197,94,0.1),transparent_60%)] pointer-events-none"></div>
 
-      {/* Main Content Area */}
-      <main className="flex-1 relative z-10 flex flex-col items-center justify-center p-6 gap-8">
+      {/* LEFT COLUMN: PLAYER */}
+      <div className={`flex-1 flex flex-col relative z-10 transition-all duration-300 ${showChat ? 'hidden md:flex' : 'flex'}`}>
         
-        {/* Album Art / DJ Avatar */}
-        <div className="relative group w-full max-w-sm aspect-square">
-          <div className={`absolute inset-0 bg-green-500 rounded-full blur-3xl opacity-20 transition-all duration-1000 ${isPlaying ? 'scale-110 opacity-30' : 'scale-90'}`}></div>
-          <div className="relative w-full h-full bg-gray-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl flex items-center justify-center">
-            {isDjSpeaking ? (
-               <div className="flex flex-col items-center gap-4 animate-pulse">
-                 <Radio className="w-32 h-32 text-green-500" />
-                 <p className="text-green-500 font-mono text-sm uppercase tracking-widest">DJ GPT falando...</p>
-               </div>
-            ) : (
-               <img 
-                 src={`https://picsum.photos/seed/${currentTrack.title.replace(/\s/g, '')}/800/800`} 
-                 alt="Album Art"
-                 className="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-700"
-               />
-            )}
-            
-            {/* Vibe overlay text */}
-            {!isDjSpeaking && (
-              <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black via-black/80 to-transparent p-6 pt-20">
-                <p className="text-xs text-green-400 font-bold uppercase tracking-wider mb-1">{currentTrack.genre}</p>
-                <h3 className="text-2xl font-bold leading-tight mb-1">{currentTrack.title}</h3>
-                <p className="text-gray-400 text-lg">{currentTrack.artist}</p>
-              </div>
-            )}
+        {/* Header */}
+        <header className="flex justify-between items-center p-6 border-b border-white/5">
+          <button onClick={onExit} className="p-2 hover:bg-white/10 rounded-full transition-colors text-gray-400 hover:text-white">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div className="flex flex-col items-center">
+            <h2 className="font-bold text-xl brand-font tracking-tight flex items-center gap-2">
+              {content.stationName}
+              {!content.isPublic && <span className="bg-gray-800 text-[10px] px-1.5 py-0.5 rounded text-gray-400 border border-gray-700">PRIVADA</span>}
+            </h2>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+               <span className="flex items-center gap-1"><Radio className="w-3 h-3" /> 104.5 GPT FM</span>
+               <span>•</span>
+               <span className="text-green-500">Online: {content.listeners + 1}</span>
+            </div>
           </div>
-        </div>
+          <button onClick={() => setShowChat(!showChat)} className="md:hidden p-2 text-gray-400 hover:text-white">
+            <MessageSquare className="w-5 h-5" />
+          </button>
+        </header>
 
-        {/* Visualizer & Info */}
-        <div className="w-full max-w-md space-y-6">
-          <div className="h-16 flex items-center justify-center">
-            {isPlaying ? (
-              <Visualizer isActive={true} />
-            ) : (
-              <div className="text-gray-600 font-mono text-sm">PAUSED</div>
-            )}
-          </div>
-
-          {/* Context / Reason */}
-          <div className="bg-white/5 border border-white/5 rounded-xl p-4 min-h-[80px] flex items-center justify-center text-center">
-            <p className="text-sm text-gray-300 italic">
-              {isDjSpeaking 
-                ? `"${content.djIntro}"`
-                : `"${currentTrack.reason}"`
-              }
-            </p>
-          </div>
-        </div>
-      </main>
-
-      {/* Player Controls Footer */}
-      <footer className="relative z-20 bg-gray-900/90 backdrop-blur-xl border-t border-white/10 p-6 pb-8">
-        <div className="max-w-2xl mx-auto w-full space-y-4">
+        {/* Main Player Visuals */}
+        <main className="flex-1 flex flex-col items-center justify-center p-6 gap-8">
           
-          {/* Progress Bar */}
-          <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-green-500 transition-all duration-300 ease-linear"
-              style={{ width: `${progress}%` }}
-            ></div>
+          <div className="relative group w-full max-w-sm aspect-square">
+            {/* Ad Overlay */}
+            {isAdBreak && (
+               <div className="absolute inset-0 z-50 bg-yellow-500/20 backdrop-blur-sm rounded-3xl border border-yellow-500/50 flex flex-col items-center justify-center text-center p-6 animate-pulse">
+                  <h3 className="text-2xl font-bold text-yellow-500 mb-2">INTERVALO COMERCIAL</h3>
+                  <p className="text-white text-sm">Voltamos em instantes...</p>
+               </div>
+            )}
+
+            <div className={`absolute inset-0 bg-green-500 rounded-full blur-3xl opacity-20 transition-all duration-1000 ${isPlaying ? 'scale-110 opacity-30' : 'scale-90'}`}></div>
+            <div className="relative w-full h-full bg-gray-900 rounded-3xl border border-white/10 overflow-hidden shadow-2xl flex items-center justify-center">
+              {isDjSpeaking ? (
+                 <div className="flex flex-col items-center gap-4 animate-pulse">
+                   <Radio className="w-32 h-32 text-green-500" />
+                   <p className="text-green-500 font-mono text-sm uppercase tracking-widest">DJ GPT falando...</p>
+                 </div>
+              ) : (
+                 <img 
+                   src={`https://picsum.photos/seed/${currentTrack.title.replace(/\s/g, '')}/800/800`} 
+                   alt="Album Art"
+                   className="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-700"
+                 />
+              )}
+              
+              {!isDjSpeaking && !isAdBreak && (
+                <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black via-black/80 to-transparent p-6 pt-20">
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <p className="text-xs text-green-400 font-bold uppercase tracking-wider mb-1">{currentTrack.genre}</p>
+                      <h3 className="text-2xl font-bold leading-tight mb-1">{currentTrack.title}</h3>
+                      <p className="text-gray-400 text-lg">{currentTrack.artist}</p>
+                    </div>
+                    {currentTrack.requestedBy && (
+                      <div className="bg-green-500/20 px-2 py-1 rounded text-[10px] text-green-400 border border-green-500/30">
+                        Pedido por @{currentTrack.requestedBy}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Controls */}
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col">
-              <span className="text-xs text-gray-500">NOW PLAYING</span>
-              <span className="font-bold text-sm truncate max-w-[150px]">
-                {isDjSpeaking ? 'Intro do DJ' : currentTrack.title}
-              </span>
+          <div className="w-full max-w-md space-y-4">
+            <div className="h-12 flex items-center justify-center">
+              {isPlaying ? <Visualizer isActive={true} /> : <div className="text-gray-600 font-mono text-sm">PAUSED</div>}
             </div>
 
-            <div className="flex items-center gap-6">
-              <button 
-                onClick={togglePlay}
-                className="w-14 h-14 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-white/10"
-              >
-                {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}
-              </button>
-              
-              <button 
-                onClick={handleNextTrack}
-                disabled={isDjSpeaking}
-                className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
-              >
-                <SkipForward className="w-8 h-8" />
-              </button>
+            <div className="bg-white/5 border border-white/5 rounded-xl p-4 min-h-[60px] flex items-center justify-center text-center">
+              <p className="text-sm text-gray-300 italic">
+                {isDjSpeaking ? `"${content.djIntro}"` : `"${currentTrack.reason}"`}
+              </p>
             </div>
+            
+            <div className="flex justify-center gap-4">
+               <button onClick={handleLike} className={`flex items-center gap-2 px-4 py-2 rounded-full border transition-all ${hasLiked ? 'bg-green-500 text-black border-green-500' : 'bg-transparent text-gray-400 border-gray-700 hover:border-white'}`}>
+                 <ThumbsUp className="w-4 h-4" /> <span className="text-xs font-bold">{likes}</span>
+               </button>
+               <button onClick={() => setShowRequestModal(true)} className="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-700 text-gray-400 hover:text-white hover:border-white transition-all bg-transparent">
+                 <Radio className="w-4 h-4" /> <span className="text-xs font-bold">Pedir Música</span>
+               </button>
+            </div>
+          </div>
+        </main>
 
-            <div className="flex justify-end min-w-[100px]">
-               {!isDjSpeaking && (
-                 <button 
-                  onClick={() => openSpotify(currentTrack)}
-                  className="flex items-center gap-2 text-xs font-bold text-green-500 hover:text-green-400 transition-colors border border-green-500/30 px-3 py-1.5 rounded-full hover:bg-green-500/10"
-                 >
-                   <span className="hidden sm:inline">ABRIR NO</span> SPOTIFY <ExternalLink className="w-3 h-3" />
-                 </button>
-               )}
+        <footer className="bg-gray-900/90 backdrop-blur-xl border-t border-white/10 p-6 pb-8">
+          <div className="max-w-2xl mx-auto w-full space-y-4">
+            <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-full bg-green-500 transition-all duration-300 ease-linear" style={{ width: `${progress}%` }}></div>
             </div>
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs text-gray-500">NOW PLAYING</span>
+                <span className="font-bold text-sm truncate max-w-[150px]">
+                  {isDjSpeaking ? 'Intro do DJ' : (isAdBreak ? 'Comercial' : currentTrack.title)}
+                </span>
+              </div>
+              <div className="flex items-center gap-6">
+                <button onClick={togglePlay} className="w-14 h-14 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-white/10">
+                  {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}
+                </button>
+                <button onClick={handleNextTrack} disabled={isDjSpeaking || isAdBreak} className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors">
+                  <SkipForward className="w-8 h-8" />
+                </button>
+              </div>
+              <div className="flex justify-end min-w-[100px]">
+                 {!isDjSpeaking && !isAdBreak && (
+                   <button onClick={() => openSpotify(currentTrack)} className={`flex items-center gap-2 text-xs font-bold transition-colors border px-3 py-1.5 rounded-full ${spotifyToken ? 'text-[#1DB954] border-[#1DB954]/50 hover:bg-[#1DB954]/10' : 'text-green-500 hover:text-green-400 border-green-500/30 hover:bg-green-500/10'}`}>
+                     <span className="hidden sm:inline">SPOTIFY</span> <ExternalLink className="w-3 h-3" />
+                   </button>
+                 )}
+              </div>
+            </div>
+          </div>
+        </footer>
+      </div>
+
+      {/* RIGHT COLUMN: CHAT (Desktop) */}
+      <div className={`w-full md:w-80 border-l border-white/10 bg-black z-20 md:flex flex-col ${showChat ? 'flex fixed inset-0 md:static' : 'hidden'}`}>
+        <div className="md:hidden flex justify-between items-center p-4 border-b border-white/10">
+          <h3 className="font-bold text-white">Chat ao Vivo</h3>
+          <button onClick={() => setShowChat(false)} className="text-gray-400">Fechar</button>
+        </div>
+        <ChatWindow user={user} onSendMessage={handleSendMessage} messages={messages} />
+      </div>
+
+      {/* REQUEST MODAL */}
+      {showRequestModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="bg-gray-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-in zoom-in duration-300">
+            <h3 className="text-xl font-bold mb-2">Pedir Música</h3>
+            <p className="text-sm text-gray-400 mb-4">A IA vai analisar se combina com a vibe "{content.vibe}".</p>
+            <form onSubmit={handleRequestSong}>
+              <input
+                type="text"
+                value={requestQuery}
+                onChange={(e) => setRequestQuery(e.target.value)}
+                placeholder="Nome da música e artista..."
+                className="w-full bg-black/50 border border-gray-700 rounded-lg px-4 py-3 mb-4 text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                disabled={isRequesting}
+              />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowRequestModal(false)} className="flex-1 py-3 bg-gray-800 rounded-lg font-bold hover:bg-gray-700 transition-colors">Cancelar</button>
+                <button type="submit" disabled={isRequesting} className="flex-1 py-3 bg-green-500 text-black rounded-lg font-bold hover:bg-green-400 transition-colors flex items-center justify-center gap-2">
+                  {isRequesting ? 'Analisando...' : 'Enviar Pedido'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
-      </footer>
+      )}
     </div>
   );
 };

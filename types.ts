@@ -1,17 +1,42 @@
+export interface User {
+  id: string;
+  username: string;
+  avatar: string;
+}
+
 export interface Track {
   artist: string;
   title: string;
   genre: string;
-  reason: string; // Why the AI picked this song
+  reason: string;
+  requestedBy?: string; // Username of requester
+}
+
+export interface ChatMessage {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  timestamp: number;
+  isSystem?: boolean;
 }
 
 export interface RadioContent {
+  id: string;
+  ownerId: string; // ID do criador
+  ownerName: string;
   stationName: string;
-  djIntro: string; // Text script for the DJ
+  isPublic: boolean;
+  vibe: string;
+  djIntro: string;
   playlist: Track[];
+  likes: number;
+  listeners: number;
 }
 
 export enum AppState {
+  AUTH = 'AUTH',
+  DASHBOARD = 'DASHBOARD',
   SETUP = 'SETUP',
   LOADING = 'LOADING',
   PLAYING = 'PLAYING',
@@ -22,6 +47,6 @@ export interface PlayerState {
   currentTrackIndex: number;
   isPlaying: boolean;
   isDjSpeaking: boolean;
-  currentTime: number; // Simulated progress
-  duration: number; // Simulated duration
+  isAdBreak: boolean;
+  lastAdTime: number;
 }
