@@ -1,0 +1,5 @@
+{
+  "name": "GPTFM",
+  "description": "Uma rádio personalizada criada por IA. Escolha o clima, a IA gera a playlist e atua como um DJ locutor em tempo real.",
+  "requestFramePermissions": []
+}
