@@ -19,8 +19,8 @@ const getClientId = () => {
 
 const CLIENT_ID = getClientId();
 
-// Dynamic Redirect URI: domain.com/redirect/spotify/
-const REDIRECT_URI = `${window.location.origin}/`;
+// Dynamic Redirect URI: domain.com/redirect/spotify
+const REDIRECT_URI = `${window.location.origin}/redirect/spotify`;
 
 const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
 const RESPONSE_TYPE = "token";
